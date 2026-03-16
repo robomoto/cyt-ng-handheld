@@ -1,10 +1,13 @@
 /**
- * TFT display driver — ST7789 170x320 on LilyGo T-Display-S3.
+ * AMOLED display driver — RM67162 240x536 on LilyGo T-Display-S3 AMOLED.
  *
- * Uses the ESP-IDF v5.x esp_lcd component with esp_lcd_panel_io_spi
- * and esp_lcd_new_panel_st7789 for the built-in display.
+ * Uses QSPI (quad-SPI) to communicate with the RM67162 driver IC.
+ * The display is connected to fixed internal pins on the board:
+ *   CS=6, SCK=47, D0=18, D1=7, D2=48, D3=5, RST=17, TE=9
  *
- * Text-only rendering in v1 using a minimal 8x16 bitmap font.
+ * Text-only rendering using a minimal 8x16 bitmap font — same as the
+ * ST7789 driver it replaces, but adapted for the wider 30-column,
+ * 33-line character grid.
  */
 
 #include "ui/display.h"
@@ -18,52 +21,70 @@
 #include "freertos/semphr.h"
 
 #include "driver/gpio.h"
-#include "driver/ledc.h"
-#include "esp_lcd_panel_io.h"
-#include "esp_lcd_panel_vendor.h"
-#include "esp_lcd_panel_ops.h"
+#include "driver/spi_master.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 
 static const char *TAG = "display";
 
-/* ── T-Display-S3 pin definitions ───────────────────────────────── */
+/* ── T-Display-S3 AMOLED QSPI pin definitions ─────────────────── */
+
+#define AMOLED_PIN_CS       6
+#define AMOLED_PIN_SCK      47
+#define AMOLED_PIN_D0       18      /* SPI MOSI / quad data 0 */
+#define AMOLED_PIN_D1       7       /* quad data 1 */
+#define AMOLED_PIN_D2       48      /* quad data 2 */
+#define AMOLED_PIN_D3       5       /* quad data 3 */
+#define AMOLED_PIN_RST      17
+#define AMOLED_PIN_TE       9       /* Tearing effect (active-low IRQ) */
+
+/* ── RM67162 command definitions ───────────────────────────────── */
+
+#define RM67162_CMD_NOP         0x00
+#define RM67162_CMD_SWRESET     0x01
+#define RM67162_CMD_SLPIN       0x10
+#define RM67162_CMD_SLPOUT      0x11
+#define RM67162_CMD_INVOFF      0x20
+#define RM67162_CMD_INVON       0x21
+#define RM67162_CMD_DISPOFF     0x28
+#define RM67162_CMD_DISPON      0x29
+#define RM67162_CMD_CASET       0x2A    /* Column address set */
+#define RM67162_CMD_RASET       0x2B    /* Row address set */
+#define RM67162_CMD_RAMWR       0x2C    /* Memory write */
+#define RM67162_CMD_MADCTL      0x36    /* Memory access control */
+#define RM67162_CMD_COLMOD      0x3A    /* Pixel format */
+#define RM67162_CMD_BRIGHTNESS  0x51    /* Write display brightness */
+#define RM67162_CMD_WRCACE      0x55    /* Write CABC */
+#define RM67162_CMD_TEOFF       0x34
+#define RM67162_CMD_TEON        0x35
 
 /*
- * The T-Display-S3 (non-touch) uses a parallel 8-bit interface by default,
- * but the ST7789 can also be driven via SPI.  LilyGo's schematic shows:
+ * RM67162 QSPI command wire format:
  *
- * For the built-in display on T-Display-S3:
- *   - Uses 8-bit parallel (Intel 8080) interface, not SPI
- *   - But esp_lcd supports both; we use the 8080 interface here
+ *   Byte 0: command (sent on single SPI line)
+ *   Byte 1: 0x00 (dummy / address high)
+ *   Byte 2: 0x00 (address mid)
+ *   Byte 3: 0x00 (address low)
+ *   Then data bytes in quad mode.
  *
- * Pin assignments from the T-Display-S3 schematic:
+ * For pixel writes (RAMWR), the 24-bit address field carries the
+ * column/row setup implicitly (pre-set via CASET/RASET).
+ *
+ * We use ESP-IDF spi_master with the SPI_TRANS_MODE_QIO flag for
+ * quad-mode data phases.
  */
-#define DISPLAY_PIN_RD      9   /* Not used in write-only mode — set high */
-#define DISPLAY_PIN_WR      8
-#define DISPLAY_PIN_RS      7   /* DC (data/command) */
-#define DISPLAY_PIN_CS      6
-#define DISPLAY_PIN_RST     5
-#define DISPLAY_PIN_BL      38  /* Backlight PWM */
-
-/* 8-bit parallel data bus */
-#define DISPLAY_PIN_D0      39
-#define DISPLAY_PIN_D1      40
-#define DISPLAY_PIN_D2      41
-#define DISPLAY_PIN_D3      42
-#define DISPLAY_PIN_D4      45
-#define DISPLAY_PIN_D5      46
-#define DISPLAY_PIN_D6      47
-#define DISPLAY_PIN_D7      48
 
 /* ── Display constants ──────────────────────────────────────────── */
 
-#define DISPLAY_W           CYT_DISPLAY_WIDTH   /* 170 */
-#define DISPLAY_H           CYT_DISPLAY_HEIGHT  /* 320 */
+#define DISPLAY_W           CYT_DISPLAY_WIDTH   /* 240 */
+#define DISPLAY_H           CYT_DISPLAY_HEIGHT  /* 536 */
 #define FONT_W              8
 #define FONT_H              16
-#define CHARS_PER_LINE      (DISPLAY_W / FONT_W)    /* 21 chars */
-#define LINES_PER_SCREEN    (DISPLAY_H / FONT_H)    /* 20 lines */
+#define CHARS_PER_LINE      (DISPLAY_W / FONT_W)    /* 30 chars */
+#define LINES_PER_SCREEN    (DISPLAY_H / FONT_H)    /* 33 lines */
+
+/* QSPI clock speed — RM67162 supports up to 80 MHz */
+#define QSPI_CLK_HZ        (40 * 1000 * 1000)
 
 /* Colors — RGB565 */
 #define COLOR_BLACK         0x0000
@@ -260,53 +281,170 @@ static const uint8_t *font_get_char(char c)
 
 /* ── Module state ───────────────────────────────────────────────── */
 
-static esp_lcd_panel_handle_t  s_panel;
-static esp_lcd_panel_io_handle_t s_panel_io;
+static spi_device_handle_t     s_spi_dev;
 static screen_id_t             s_current_screen = SCREEN_STATUS;
 static display_status_t        s_last_status;
 static SemaphoreHandle_t       s_disp_mutex;
 static int64_t                 s_last_activity_us;
-static bool                    s_backlight_on;
+static bool                    s_display_on;
+static bool                    s_initialized;
 
-/* Framebuffer line — one row of pixels in RGB565, used for drawing */
+/* Line pixel buffer — one row of pixels in RGB565 for drawing */
 static uint16_t s_line_buf[DISPLAY_W];
 
-/* ── Backlight control via LEDC PWM ─────────────────────────────── */
+/* ── QSPI low-level transport ──────────────────────────────────── */
 
-static void backlight_init(void)
+/**
+ * Send a command with optional parameter bytes to the RM67162.
+ *
+ * The RM67162 QSPI protocol sends the command byte on a single SPI
+ * line, followed by a 24-bit address (set to 0x000000 for register
+ * commands), then parameter data in quad mode.
+ *
+ * For commands with no data, we just send the 4-byte header.
+ */
+static esp_err_t rm67162_send_cmd(uint8_t cmd, const uint8_t *data, size_t len)
 {
-    ledc_timer_config_t timer_cfg = {
-        .speed_mode      = LEDC_LOW_SPEED_MODE,
-        .timer_num       = LEDC_TIMER_0,
-        .duty_resolution = LEDC_TIMER_8_BIT,
-        .freq_hz         = 5000,
-        .clk_cfg         = LEDC_AUTO_CLK,
+    spi_transaction_ext_t ext = {
+        .base = {
+            .flags = SPI_TRANS_MULTILINE_CMD | SPI_TRANS_MULTILINE_ADDR,
+            .cmd   = cmd,
+            .addr  = 0x000000,
+            .length   = len * 8,
+            .tx_buffer = data,
+        },
+        .command_bits = 8,
+        .address_bits = 24,
     };
-    ledc_timer_config(&timer_cfg);
 
-    ledc_channel_config_t ch_cfg = {
-        .speed_mode = LEDC_LOW_SPEED_MODE,
-        .channel    = LEDC_CHANNEL_0,
-        .timer_sel  = LEDC_TIMER_0,
-        .intr_type  = LEDC_INTR_DISABLE,
-        .gpio_num   = DISPLAY_PIN_BL,
-        .duty       = 200,          /* ~80% brightness */
-        .hpoint     = 0,
-    };
-    ledc_channel_config(&ch_cfg);
+    /*
+     * Command and address travel on 1 line; data phase uses 4 lines.
+     * ESP-IDF SPI_TRANS_MULTILINE_CMD/ADDR flags tell the driver to
+     * keep command/address on 1 line even when the device is
+     * configured for quad mode.
+     */
+    if (len == 0) {
+        ext.base.tx_buffer = NULL;
+    }
 
-    s_backlight_on = true;
+    return spi_device_polling_transmit(s_spi_dev,
+                                       (spi_transaction_t *)&ext);
 }
 
-static void backlight_set(bool on)
+/**
+ * Write a rectangular block of RGB565 pixel data to the display.
+ * Assumes CASET/RASET have already been configured.
+ *
+ * For large transfers we send the RAMWR command header first, then
+ * the pixel data in quad mode using DMA-capable buffer.
+ */
+static esp_err_t rm67162_write_pixels(const uint16_t *pixels, size_t pixel_count)
 {
-    uint32_t duty = on ? 200 : 0;
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty);
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
-    s_backlight_on = on;
+    /*
+     * The RM67162 expects big-endian RGB565.  ESP32-S3 is little-endian,
+     * so we byte-swap each pixel before sending.  For line-at-a-time
+     * rendering the overhead is negligible.
+     */
+    spi_transaction_ext_t ext = {
+        .base = {
+            .flags = SPI_TRANS_MULTILINE_CMD | SPI_TRANS_MULTILINE_ADDR,
+            .cmd   = RM67162_CMD_RAMWR,
+            .addr  = 0x000000,
+            .length   = pixel_count * 16,   /* bits */
+            .tx_buffer = pixels,
+        },
+        .command_bits = 8,
+        .address_bits = 24,
+    };
+
+    return spi_device_polling_transmit(s_spi_dev,
+                                       (spi_transaction_t *)&ext);
+}
+
+/**
+ * Set the column (x) address window.
+ */
+static void rm67162_set_column(uint16_t start, uint16_t end)
+{
+    uint8_t data[4] = {
+        (uint8_t)(start >> 8), (uint8_t)(start & 0xFF),
+        (uint8_t)(end >> 8),   (uint8_t)(end & 0xFF),
+    };
+    rm67162_send_cmd(RM67162_CMD_CASET, data, sizeof(data));
+}
+
+/**
+ * Set the row (y) address window.
+ */
+static void rm67162_set_row(uint16_t start, uint16_t end)
+{
+    uint8_t data[4] = {
+        (uint8_t)(start >> 8), (uint8_t)(start & 0xFF),
+        (uint8_t)(end >> 8),   (uint8_t)(end & 0xFF),
+    };
+    rm67162_send_cmd(RM67162_CMD_RASET, data, sizeof(data));
+}
+
+/**
+ * Set the address window for a rectangular region, then send RAMWR
+ * to begin writing pixels.
+ */
+static void rm67162_set_window(uint16_t x0, uint16_t y0,
+                                uint16_t x1, uint16_t y1)
+{
+    rm67162_set_column(x0, x1 - 1);
+    rm67162_set_row(y0, y1 - 1);
+}
+
+/* ── AMOLED power control (replaces backlight PWM) ─────────────── */
+
+/**
+ * Turn the display panel on — exit sleep, enable pixel output.
+ * AMOLED has no backlight; the panel itself emits light.
+ */
+static void amoled_panel_on(void)
+{
+    if (!s_initialized) return;
+
+    rm67162_send_cmd(RM67162_CMD_SLPOUT, NULL, 0);
+    vTaskDelay(pdMS_TO_TICKS(120));
+    rm67162_send_cmd(RM67162_CMD_DISPON, NULL, 0);
+    vTaskDelay(pdMS_TO_TICKS(20));
+
+    /* Set brightness to ~80% */
+    uint8_t brightness = 0xCC;
+    rm67162_send_cmd(RM67162_CMD_BRIGHTNESS, &brightness, 1);
+
+    s_display_on = true;
+}
+
+/**
+ * Turn the display panel off — pixels off, then enter sleep for
+ * minimal power draw (~10 uA).
+ */
+static void amoled_panel_off(void)
+{
+    if (!s_initialized) return;
+
+    rm67162_send_cmd(RM67162_CMD_DISPOFF, NULL, 0);
+    vTaskDelay(pdMS_TO_TICKS(20));
+    rm67162_send_cmd(RM67162_CMD_SLPIN, NULL, 0);
+    vTaskDelay(pdMS_TO_TICKS(120));
+
+    s_display_on = false;
 }
 
 /* ── Drawing primitives ─────────────────────────────────────────── */
+
+/**
+ * Byte-swap a line buffer from native LE to the BE order RM67162 expects.
+ */
+static void swap_line_buf(uint16_t *buf, int count)
+{
+    for (int i = 0; i < count; i++) {
+        buf[i] = __builtin_bswap16(buf[i]);
+    }
+}
 
 /**
  * Fill a rectangular region with a solid color.
@@ -314,18 +452,23 @@ static void backlight_set(bool on)
 static void draw_fill_rect(int x, int y, int w, int h, uint16_t color)
 {
     if (w > DISPLAY_W) w = DISPLAY_W;
+    if (x + w > DISPLAY_W) w = DISPLAY_W - x;
+    if (y + h > DISPLAY_H) h = DISPLAY_H - y;
+    if (w <= 0 || h <= 0) return;
 
+    uint16_t be_color = __builtin_bswap16(color);
     for (int i = 0; i < w; i++) {
-        s_line_buf[i] = color;
+        s_line_buf[i] = be_color;
     }
 
-    for (int row = y; row < y + h && row < DISPLAY_H; row++) {
-        esp_lcd_panel_draw_bitmap(s_panel, x, row, x + w, row + 1, s_line_buf);
+    for (int row = y; row < y + h; row++) {
+        rm67162_set_window(x, row, x + w, row + 1);
+        rm67162_write_pixels(s_line_buf, w);
     }
 }
 
 /**
- * Draw a single character at pixel position (x, y) with foreground/background colors.
+ * Draw a single character at pixel position (x, y) with fg/bg colors.
  */
 static void draw_char(int x, int y, char c, uint16_t fg, uint16_t bg)
 {
@@ -338,8 +481,10 @@ static void draw_char(int x, int y, char c, uint16_t fg, uint16_t bg)
         }
         int py = y + row;
         if (py >= 0 && py < DISPLAY_H) {
-            esp_lcd_panel_draw_bitmap(s_panel, x, py, x + FONT_W, py + 1,
-                                      s_line_buf);
+            /* Byte-swap and send this 8-pixel row */
+            swap_line_buf(s_line_buf, FONT_W);
+            rm67162_set_window(x, py, x + FONT_W, py + 1);
+            rm67162_write_pixels(s_line_buf, FONT_W);
         }
     }
 }
@@ -391,49 +536,54 @@ static void render_status_screen(const display_status_t *st)
     char buf[CHARS_PER_LINE + 1];
 
     /* Title bar */
-    draw_text_line(0, "  CYT-NG HANDHELD", COLOR_BLACK, COLOR_CYAN);
+    draw_text_line(0, "      CYT-NG HANDHELD", COLOR_BLACK, COLOR_CYAN);
 
     /* Blank separator */
     draw_text_line(1, "", COLOR_WHITE, COLOR_BLACK);
 
     /* Device counts */
     snprintf(buf, sizeof(buf), "DEVICES: %lu", (unsigned long)st->total_devices);
-    draw_text_line(2, buf, COLOR_WHITE, COLOR_BLACK);
+    draw_text_line(3, buf, COLOR_WHITE, COLOR_BLACK);
 
     snprintf(buf, sizeof(buf), "WIFI: %lu  BLE: %lu",
              (unsigned long)st->wifi_count, (unsigned long)st->ble_count);
-    draw_text_line(3, buf, COLOR_GREEN, COLOR_BLACK);
+    draw_text_line(5, buf, COLOR_GREEN, COLOR_BLACK);
 
     snprintf(buf, sizeof(buf), "TPMS: %lu  DRONE: %lu",
              (unsigned long)st->tpms_count, (unsigned long)st->drone_count);
-    draw_text_line(4, buf, COLOR_GREEN, COLOR_BLACK);
+    draw_text_line(6, buf, COLOR_GREEN, COLOR_BLACK);
 
-    draw_text_line(5, "", COLOR_WHITE, COLOR_BLACK);
+    draw_text_line(7, "", COLOR_WHITE, COLOR_BLACK);
+    draw_text_line(8, "", COLOR_WHITE, COLOR_BLACK);
 
     /* Alert count */
     uint16_t alert_color = st->suspicious_count > 0 ? COLOR_RED : COLOR_GREEN;
     snprintf(buf, sizeof(buf), "ALERTS: %lu", (unsigned long)st->suspicious_count);
-    draw_text_line(6, buf, alert_color, COLOR_BLACK);
+    draw_text_line(9, buf, alert_color, COLOR_BLACK);
 
-    draw_text_line(7, "", COLOR_WHITE, COLOR_BLACK);
+    draw_text_line(10, "", COLOR_WHITE, COLOR_BLACK);
 
     /* GPS status */
     snprintf(buf, sizeof(buf), "GPS: %s", st->gps_fix ? "FIX OK" : "NO FIX");
-    draw_text_line(8, buf, st->gps_fix ? COLOR_GREEN : COLOR_YELLOW, COLOR_BLACK);
+    draw_text_line(12, buf, st->gps_fix ? COLOR_GREEN : COLOR_YELLOW, COLOR_BLACK);
 
     /* Battery */
     snprintf(buf, sizeof(buf), "BATT: %u%%", st->battery_percent);
     uint16_t batt_color = st->battery_percent > 20 ? COLOR_GREEN : COLOR_RED;
-    draw_text_line(9, buf, batt_color, COLOR_BLACK);
+    draw_text_line(14, buf, batt_color, COLOR_BLACK);
 
     /* SD status */
     snprintf(buf, sizeof(buf), "SD: %s",
              st->sd_ready ? (st->session_active ? "LOGGING" : "READY") : "NONE");
     uint16_t sd_color = st->sd_ready ? COLOR_GREEN : COLOR_RED;
-    draw_text_line(10, buf, sd_color, COLOR_BLACK);
+    draw_text_line(16, buf, sd_color, COLOR_BLACK);
 
     /* Clear remaining lines */
-    for (int i = 11; i < LINES_PER_SCREEN; i++) {
+    for (int i = 2; i < LINES_PER_SCREEN; i++) {
+        /* Skip lines we already drew */
+        if (i == 3 || i == 5 || i == 6 || i == 9 || i == 12 ||
+            i == 14 || i == 16) continue;
+        if (i == 0 || i == 1 || i == 7 || i == 8 || i == 10) continue;
         draw_text_line(i, "", COLOR_WHITE, COLOR_BLACK);
     }
 }
@@ -443,41 +593,44 @@ static void render_alert_screen(const display_status_t *st)
     char buf[CHARS_PER_LINE + 1];
 
     /* Title bar */
-    draw_text_line(0, "   ALERT DETAIL", COLOR_BLACK, COLOR_RED);
+    draw_text_line(0, "       ALERT DETAIL", COLOR_BLACK, COLOR_RED);
 
     draw_text_line(1, "", COLOR_WHITE, COLOR_BLACK);
 
     if (st->suspicious_count == 0) {
-        draw_text_line(3, "  NO ALERTS", COLOR_GREEN, COLOR_BLACK);
-        draw_text_line(5, " ALL CLEAR", COLOR_GREEN, COLOR_BLACK);
+        draw_text_line(5, "       NO ALERTS", COLOR_GREEN, COLOR_BLACK);
+        draw_text_line(7, "        ALL CLEAR", COLOR_GREEN, COLOR_BLACK);
 
-        for (int i = 6; i < LINES_PER_SCREEN; i++) {
+        for (int i = 2; i < LINES_PER_SCREEN; i++) {
+            if (i == 5 || i == 7) continue;
             draw_text_line(i, "", COLOR_WHITE, COLOR_BLACK);
         }
         return;
     }
 
-    draw_text_line(2, "HIGHEST PERSIST:", COLOR_YELLOW, COLOR_BLACK);
+    draw_text_line(3, "HIGHEST PERSISTENCE:", COLOR_YELLOW, COLOR_BLACK);
 
-    /* Device ID */
-    snprintf(buf, sizeof(buf), "ID:%.17s", st->highest_device_id);
-    draw_text_line(4, buf, COLOR_WHITE, COLOR_BLACK);
+    /* Device ID — more room now (30 chars) */
+    snprintf(buf, sizeof(buf), "ID: %.26s", st->highest_device_id);
+    draw_text_line(5, buf, COLOR_WHITE, COLOR_BLACK);
 
     /* Persistence score */
     snprintf(buf, sizeof(buf), "SCORE: %.2f", st->highest_persistence);
     uint16_t score_color = st->highest_persistence >= 0.7f ? COLOR_RED : COLOR_ORANGE;
-    draw_text_line(6, buf, score_color, COLOR_BLACK);
+    draw_text_line(7, buf, score_color, COLOR_BLACK);
 
-    draw_text_line(7, "", COLOR_WHITE, COLOR_BLACK);
+    draw_text_line(8, "", COLOR_WHITE, COLOR_BLACK);
 
     snprintf(buf, sizeof(buf), "TOTAL ALERTS: %lu",
              (unsigned long)st->suspicious_count);
-    draw_text_line(8, buf, COLOR_RED, COLOR_BLACK);
+    draw_text_line(10, buf, COLOR_RED, COLOR_BLACK);
 
-    draw_text_line(10, "CHECK DEVICE LIST", COLOR_YELLOW, COLOR_BLACK);
-    draw_text_line(11, "FOR MORE DETAILS", COLOR_YELLOW, COLOR_BLACK);
+    draw_text_line(12, "CHECK DEVICE LIST", COLOR_YELLOW, COLOR_BLACK);
+    draw_text_line(13, "FOR MORE DETAILS", COLOR_YELLOW, COLOR_BLACK);
 
-    for (int i = 12; i < LINES_PER_SCREEN; i++) {
+    for (int i = 2; i < LINES_PER_SCREEN; i++) {
+        if (i == 3 || i == 5 || i == 7 || i == 8 || i == 10 ||
+            i == 12 || i == 13) continue;
         draw_text_line(i, "", COLOR_WHITE, COLOR_BLACK);
     }
 }
@@ -487,48 +640,48 @@ static void render_devices_screen(const display_status_t *st)
     char buf[CHARS_PER_LINE + 1];
 
     /* Title bar */
-    draw_text_line(0, "  DEVICE LIST", COLOR_BLACK, COLOR_GREEN);
+    draw_text_line(0, "       DEVICE LIST", COLOR_BLACK, COLOR_GREEN);
 
     draw_text_line(1, "", COLOR_WHITE, COLOR_BLACK);
 
     snprintf(buf, sizeof(buf), "%lu TOTAL TRACKED",
              (unsigned long)st->total_devices);
-    draw_text_line(2, buf, COLOR_WHITE, COLOR_BLACK);
+    draw_text_line(3, buf, COLOR_WHITE, COLOR_BLACK);
 
-    draw_text_line(3, "", COLOR_WHITE, COLOR_BLACK);
+    draw_text_line(4, "", COLOR_WHITE, COLOR_BLACK);
 
     /*
      * In v1 we show summary counts only.  A full scrollable device list
      * requires the display task to query the device table directly,
      * which will be added in v2 with proper page-up/page-down support.
      */
-    snprintf(buf, sizeof(buf), "WIFI:  %lu", (unsigned long)st->wifi_count);
-    draw_text_line(4, buf, COLOR_CYAN, COLOR_BLACK);
-
-    snprintf(buf, sizeof(buf), "BLE:   %lu", (unsigned long)st->ble_count);
-    draw_text_line(5, buf, COLOR_CYAN, COLOR_BLACK);
-
-    snprintf(buf, sizeof(buf), "TPMS:  %lu", (unsigned long)st->tpms_count);
+    snprintf(buf, sizeof(buf), "WIFI:   %lu", (unsigned long)st->wifi_count);
     draw_text_line(6, buf, COLOR_CYAN, COLOR_BLACK);
 
-    snprintf(buf, sizeof(buf), "DRONE: %lu", (unsigned long)st->drone_count);
-    draw_text_line(7, buf, COLOR_CYAN, COLOR_BLACK);
+    snprintf(buf, sizeof(buf), "BLE:    %lu", (unsigned long)st->ble_count);
+    draw_text_line(8, buf, COLOR_CYAN, COLOR_BLACK);
 
-    draw_text_line(8, "", COLOR_WHITE, COLOR_BLACK);
+    snprintf(buf, sizeof(buf), "TPMS:   %lu", (unsigned long)st->tpms_count);
+    draw_text_line(10, buf, COLOR_CYAN, COLOR_BLACK);
+
+    snprintf(buf, sizeof(buf), "DRONE:  %lu", (unsigned long)st->drone_count);
+    draw_text_line(12, buf, COLOR_CYAN, COLOR_BLACK);
+
+    draw_text_line(13, "", COLOR_WHITE, COLOR_BLACK);
 
     snprintf(buf, sizeof(buf), "SUSPICIOUS: %lu",
              (unsigned long)st->suspicious_count);
     uint16_t color = st->suspicious_count > 0 ? COLOR_RED : COLOR_GREEN;
-    draw_text_line(9, buf, color, COLOR_BLACK);
+    draw_text_line(15, buf, color, COLOR_BLACK);
 
-    draw_text_line(10, "", COLOR_WHITE, COLOR_BLACK);
+    /* Navigation hint — at bottom of taller display */
+    draw_text_line(30, "UP/DOWN: SCROLL", COLOR_DARK_GRAY, COLOR_BLACK);
+    draw_text_line(31, "MODE: NEXT SCREEN", COLOR_DARK_GRAY, COLOR_BLACK);
 
-    /* Navigation hint */
-    draw_text_line(18, "UP/DOWN: SCROLL", COLOR_DARK_GRAY, COLOR_BLACK);
-    draw_text_line(19, "MODE: NEXT SCREEN", COLOR_DARK_GRAY, COLOR_BLACK);
-
-    /* Clear middle lines */
-    for (int i = 11; i < 18; i++) {
+    /* Clear unused lines */
+    for (int i = 2; i < LINES_PER_SCREEN; i++) {
+        if (i == 3 || i == 6 || i == 8 || i == 10 || i == 12 ||
+            i == 13 || i == 15 || i == 30 || i == 31) continue;
         draw_text_line(i, "", COLOR_WHITE, COLOR_BLACK);
     }
 }
@@ -537,16 +690,14 @@ static void render_devices_screen(const display_status_t *st)
 
 void display_init(void)
 {
-    ESP_LOGI(TAG, "Initializing ST7789 display (170x320)");
+    ESP_LOGI(TAG, "Initializing RM67162 AMOLED display (240x536) via QSPI");
 
     s_disp_mutex = xSemaphoreCreateMutex();
 
-    /* Initialize backlight PWM */
-    backlight_init();
+    /* ── Hardware reset ──────────────────────────────────────────── */
 
-    /* Reset pin */
     gpio_config_t rst_cfg = {
-        .pin_bit_mask = (1ULL << DISPLAY_PIN_RST),
+        .pin_bit_mask = (1ULL << AMOLED_PIN_RST),
         .mode         = GPIO_MODE_OUTPUT,
         .pull_up_en   = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -554,102 +705,109 @@ void display_init(void)
     };
     gpio_config(&rst_cfg);
 
-    /* Hardware reset */
-    gpio_set_level(DISPLAY_PIN_RST, 0);
+    gpio_set_level(AMOLED_PIN_RST, 0);
     vTaskDelay(pdMS_TO_TICKS(20));
-    gpio_set_level(DISPLAY_PIN_RST, 1);
+    gpio_set_level(AMOLED_PIN_RST, 1);
     vTaskDelay(pdMS_TO_TICKS(120));
 
-    /*
-     * Configure the 8080 parallel interface for the T-Display-S3.
-     * ESP-IDF esp_lcd provides an i80 bus abstraction for this.
-     */
-    esp_lcd_i80_bus_handle_t i80_bus = NULL;
-    esp_lcd_i80_bus_config_t bus_cfg = {
-        .clk_src      = LCD_CLK_SRC_DEFAULT,
-        .dc_gpio_num  = DISPLAY_PIN_RS,
-        .wr_gpio_num  = DISPLAY_PIN_WR,
-        .data_gpio_nums = {
-            DISPLAY_PIN_D0, DISPLAY_PIN_D1, DISPLAY_PIN_D2, DISPLAY_PIN_D3,
-            DISPLAY_PIN_D4, DISPLAY_PIN_D5, DISPLAY_PIN_D6, DISPLAY_PIN_D7,
-        },
-        .bus_width          = 8,
-        .max_transfer_bytes = DISPLAY_W * FONT_H * sizeof(uint16_t),
-        .psram_trans_align  = 64,
-        .sram_trans_align   = 4,
+    /* ── QSPI bus configuration ──────────────────────────────────── */
+
+    spi_bus_config_t bus_cfg = {
+        .sclk_io_num     = AMOLED_PIN_SCK,
+        .data0_io_num    = AMOLED_PIN_D0,
+        .data1_io_num    = AMOLED_PIN_D1,
+        .data2_io_num    = AMOLED_PIN_D2,
+        .data3_io_num    = AMOLED_PIN_D3,
+        .max_transfer_sz = DISPLAY_W * FONT_H * sizeof(uint16_t) + 64,
+        .flags           = SPICOMMON_BUSFLAG_QUAD,
     };
 
-    esp_err_t err = esp_lcd_new_i80_bus(&bus_cfg, &i80_bus);
+    esp_err_t err = spi_bus_initialize(SPI2_HOST, &bus_cfg, SPI_DMA_CH_AUTO);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to create i80 bus: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "Failed to init QSPI bus: %s", esp_err_to_name(err));
         return;
     }
 
-    esp_lcd_panel_io_i80_config_t io_cfg = {
-        .cs_gpio_num       = DISPLAY_PIN_CS,
-        .pclk_hz           = 10 * 1000 * 1000,  /* 10 MHz pixel clock */
-        .trans_queue_depth  = 10,
-        .dc_levels = {
-            .dc_idle_level  = 0,
-            .dc_cmd_level   = 0,
-            .dc_dummy_level = 0,
-            .dc_data_level  = 1,
-        },
-        .lcd_cmd_bits   = 8,
-        .lcd_param_bits = 8,
+    spi_device_interface_config_t dev_cfg = {
+        .command_bits    = 8,
+        .address_bits    = 24,
+        .mode            = 0,           /* CPOL=0, CPHA=0 */
+        .clock_speed_hz  = QSPI_CLK_HZ,
+        .spics_io_num    = AMOLED_PIN_CS,
+        .queue_size      = 1,
+        .flags           = SPI_DEVICE_HALFDUPLEX,
     };
 
-    err = esp_lcd_new_panel_io_i80(i80_bus, &io_cfg, &s_panel_io);
+    err = spi_bus_add_device(SPI2_HOST, &dev_cfg, &s_spi_dev);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to create panel IO: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "Failed to add QSPI device: %s", esp_err_to_name(err));
         return;
     }
 
-    /* Create the ST7789 panel driver */
-    esp_lcd_panel_dev_config_t panel_cfg = {
-        .reset_gpio_num = DISPLAY_PIN_RST,
-        .rgb_endian     = LCD_RGB_ENDIAN_RGB,
-        .bits_per_pixel = 16,
-    };
+    s_initialized = true;
 
-    err = esp_lcd_new_panel_st7789(s_panel_io, &panel_cfg, &s_panel);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to create ST7789 panel: %s", esp_err_to_name(err));
-        return;
-    }
+    /* ── RM67162 initialization sequence ─────────────────────────── */
 
-    /* Initialize the panel */
-    esp_lcd_panel_reset(s_panel);
-    esp_lcd_panel_init(s_panel);
+    /* Software reset */
+    rm67162_send_cmd(RM67162_CMD_SWRESET, NULL, 0);
+    vTaskDelay(pdMS_TO_TICKS(150));
+
+    /* Exit sleep mode */
+    rm67162_send_cmd(RM67162_CMD_SLPOUT, NULL, 0);
+    vTaskDelay(pdMS_TO_TICKS(120));
+
+    /* Pixel format: 16-bit RGB565 */
+    uint8_t colmod = 0x55;
+    rm67162_send_cmd(RM67162_CMD_COLMOD, &colmod, 1);
 
     /*
-     * T-Display-S3 display orientation:
-     * The 170x320 display is mounted in portrait.  Swap XY and mirror
-     * as needed to get the correct orientation for handheld use.
+     * Memory access control — set scan direction for portrait mode.
+     * Bit layout: MY | MX | MV | ML | BGR | MH | 0 | 0
+     *
+     * For the T-Display-S3 AMOLED in portrait (240 wide, 536 tall):
+     *   0x00 = normal top-to-bottom, left-to-right, RGB order
      */
-    esp_lcd_panel_swap_xy(s_panel, true);
-    esp_lcd_panel_mirror(s_panel, false, true);
-    esp_lcd_panel_invert_color(s_panel, true);  /* ST7789 needs color inversion */
+    uint8_t madctl = 0x00;
+    rm67162_send_cmd(RM67162_CMD_MADCTL, &madctl, 1);
 
-    /* Turn on the display */
-    esp_lcd_panel_disp_on_off(s_panel, true);
+    /* Enable tearing-effect output on TE pin (vsync signal) */
+    uint8_t te_mode = 0x00;     /* V-blank only */
+    rm67162_send_cmd(RM67162_CMD_TEON, &te_mode, 1);
+
+    /* Set brightness */
+    uint8_t brightness = 0xCC;  /* ~80% */
+    rm67162_send_cmd(RM67162_CMD_BRIGHTNESS, &brightness, 1);
+
+    /* Content adaptive brightness: off (we control it manually) */
+    uint8_t cabc = 0x00;
+    rm67162_send_cmd(RM67162_CMD_WRCACE, &cabc, 1);
+
+    /* Normal display mode on */
+    rm67162_send_cmd(0x13, NULL, 0);  /* NORON */
+
+    /* Display ON */
+    rm67162_send_cmd(RM67162_CMD_DISPON, NULL, 0);
+    vTaskDelay(pdMS_TO_TICKS(20));
+
+    s_display_on = true;
 
     /* Clear to black */
     draw_clear(COLOR_BLACK);
 
-    /* Show boot message */
-    draw_text_line(4, "  CYT-NG v1.0", COLOR_CYAN, COLOR_BLACK);
-    draw_text_line(6, "  INITIALIZING...", COLOR_WHITE, COLOR_BLACK);
+    /* Show boot message — centered for 30-char width */
+    draw_text_line(10, "     CYT-NG v1.0", COLOR_CYAN, COLOR_BLACK);
+    draw_text_line(12, "     INITIALIZING...", COLOR_WHITE, COLOR_BLACK);
 
     s_last_activity_us = esp_timer_get_time();
     memset(&s_last_status, 0, sizeof(s_last_status));
 
-    ESP_LOGI(TAG, "Display initialized");
+    ESP_LOGI(TAG, "AMOLED display initialized (240x536, QSPI @ %d MHz)",
+             QSPI_CLK_HZ / 1000000);
 }
 
 void display_update(const display_status_t *status)
 {
-    if (!s_panel || !status) {
+    if (!s_initialized || !status) {
         return;
     }
 
@@ -662,13 +820,13 @@ void display_update(const display_status_t *status)
     int64_t now = esp_timer_get_time();
     int64_t idle_ms = (now - s_last_activity_us) / 1000;
 
-    if (s_backlight_on && idle_ms > CYT_DISPLAY_AUTO_OFF_MS) {
-        backlight_set(false);
+    if (s_display_on && idle_ms > CYT_DISPLAY_AUTO_OFF_MS) {
+        amoled_panel_off();
         xSemaphoreGive(s_disp_mutex);
         return;     /* Don't render when display is off */
     }
 
-    if (!s_backlight_on) {
+    if (!s_display_on) {
         xSemaphoreGive(s_disp_mutex);
         return;
     }
@@ -726,14 +884,14 @@ void display_wake(void)
 {
     s_last_activity_us = esp_timer_get_time();
 
-    if (!s_backlight_on) {
-        backlight_set(true);
-        ESP_LOGD(TAG, "Display woke");
+    if (!s_display_on) {
+        amoled_panel_on();
+        ESP_LOGD(TAG, "AMOLED woke");
     }
 }
 
 void display_off(void)
 {
-    backlight_set(false);
-    ESP_LOGD(TAG, "Display forced off");
+    amoled_panel_off();
+    ESP_LOGD(TAG, "AMOLED forced off (sleep mode)");
 }

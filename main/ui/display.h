@@ -1,5 +1,5 @@
 /**
- * TFT display driver — 170x320 ST7789 on T-Display-S3.
+ * AMOLED display driver — 240x536 RM67162 on T-Display-S3 AMOLED.
  *
  * Three screens navigated by 3 buttons:
  *   Screen 0: Status (device count, alert count, battery, GPS fix)
@@ -7,7 +7,7 @@
  *   Screen 2: Device list (scrollable, 2 lines per device)
  *
  * Updated every 2 seconds from the analysis task on Core 1.
- * Auto-dims after 30 seconds of inactivity.
+ * Auto-off after 30 seconds of inactivity (AMOLED sleep, ~10 uA).
  */
 #pragma once
 

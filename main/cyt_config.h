@@ -36,9 +36,14 @@
 #define CYT_SD_LOG_INTERVAL_S       60      /* Batch write to SD every 60s */
 
 /* ── CC1101 sub-GHz (SPI — shared bus with SD) ──────────────────── */
-#define CYT_CC1101_CS_PIN           9
-#define CYT_CC1101_GDO0_PIN         8       /* IRQ — packet received */
-#define CYT_CC1101_GDO2_PIN         7       /* Optional status */
+/*
+ * Pins 6, 7, 9 are used by the AMOLED QSPI bus on the T-Display-S3
+ * AMOLED variant — CC1101 moved to free GPIOs.  CC1101 hardware reset
+ * removed: use the SPI SRES strobe (command 0x30) instead.
+ */
+#define CYT_CC1101_CS_PIN           15
+#define CYT_CC1101_GDO0_PIN         16      /* IRQ — packet received */
+#define CYT_CC1101_GDO2_PIN         21      /* Optional status */
 
 /* ── Buzzer (PWM via LEDC) ──────────────────────────────────────── */
 #define CYT_BUZZER_PIN              1
@@ -50,9 +55,9 @@
 #define CYT_BTN_DOWN_PIN            3
 #define CYT_BTN_MODE_PIN            14
 
-/* ── Display (ST7789 — built into T-Display-S3, managed by driver) */
-#define CYT_DISPLAY_WIDTH           170
-#define CYT_DISPLAY_HEIGHT          320
+/* ── Display (RM67162 AMOLED — T-Display-S3 AMOLED, QSPI interface) */
+#define CYT_DISPLAY_WIDTH           240
+#define CYT_DISPLAY_HEIGHT          536
 #define CYT_DISPLAY_UPDATE_MS       2000    /* Refresh every 2 seconds */
 #define CYT_DISPLAY_AUTO_OFF_MS     30000   /* Dim after 30 seconds */
 

@@ -1,45 +1,62 @@
 # ESP32 Handheld: Hardware Plan
 
-## Full-Featured Build (~$58)
+## Full-Featured Build (~$62)
 
-### Core: LilyGo T-Display-S3
+### Core: LilyGo T-Display-S3 AMOLED
 
-**LilyGo T-Display-S3 Non-Touch, 8MB PSRAM, 16MB flash** — ~$18
+**LilyGo T-Display-S3 AMOLED, 8MB PSRAM, 16MB flash** — ~$22
 
 - Dual-core Xtensa LX7 @ 240 MHz
 - 512KB SRAM + 8MB PSRAM (octal SPI)
-- 1.9" 170x320 ST7789 TFT
+- 1.91" 240x536 RM67162 AMOLED (QSPI interface)
 - BLE 5.0 for tracker detection + Remote ID
 - WiFi promiscuous mode for probe capture
 - Native USB-C (USB-OTG) for charging + data upload
 - Built-in LiPo charging circuit
-
-**CRITICAL: Buy the NON-TOUCH variant.** The touch version uses GPIO 1-3 which conflict with the SPI bus.
+- Perfect blacks — background-color-as-threat-level is more effective
+- Better readability at all viewing angles and in low light
+- Lower power on dark themes (only lit pixels draw current)
+- 30 chars/line × 33 lines (vs 21×20 on TFT) — alert text fits without wrapping
 
 ### Bill of Materials
 
 | # | Component | Specific Part | Connection | Cost |
 |---|-----------|--------------|------------|------|
-| 1 | MCU + Display | LilyGo T-Display-S3 (8MB PSRAM, non-touch) | — | $18 |
+| 1 | MCU + Display | LilyGo T-Display-S3 AMOLED (8MB PSRAM) | — | $22 |
 | 2 | GPS module | u-blox NEO-M8N (GY-NEO8MV2 breakout) | UART1: GPIO 43 (TX), GPIO 44 (RX) | $8 |
 | 3 | SD card breakout | Generic microSD SPI module (3.3V native, no level shifter) | SPI: GPIO 10 (CS), 11 (MOSI), 12 (CLK), 13 (MISO) | $2 |
 | 4 | microSD card | 8GB+ Class 10 | In SD breakout | $4 |
 | 5 | Sub-GHz module | CC1101-based (EBYTE E07-900M10S or generic) | SPI shared: GPIO 9 (CS), 8 (GDO0/IRQ), 7 (GDO2), 6 (optional RST) | $6 |
-| 6 | 433 MHz antenna | 1/4 wave SMA whip (~17cm) | SMA on CC1101 | $3 |
-| 7 | 2.4 GHz antenna | External SMA whip + U.FL pigtail | Solder to PCB antenna feed | $3 |
-| 8 | Battery | 18650 Samsung 30Q (3000mAh) + spring holder w/ JST-PH 2.0 | JST-PH to battery connector | $5 |
-| 9 | Buzzer | Passive piezo (3.3V) | GPIO 1 (PWM) | $1 |
-| 10 | Buttons | 3x tactile switches (6mm) | GPIO 2, 3, 14 (w/ 10K pull-ups) | $1 |
-| 11 | Enclosure | 3D-printed or Hammond 1591XXBSBK (~100x60x30mm) | — | $5 |
-| 12 | Wiring/misc | JST connectors, perfboard, headers, SMA pigtails | — | $5 |
-| | **TOTAL** | | | **~$58** |
+| 6 | 433 MHz antenna | Internal wire antenna (~17cm, coiled inside case) | Solder to CC1101 antenna pad | $1 |
+| 7 | Battery | 18650 Samsung 30Q (3000mAh) + spring holder w/ JST-PH 2.0 | JST-PH to battery connector | $5 |
+| 8 | Buzzer | Passive piezo (3.3V) | GPIO 1 (PWM) | $1 |
+| 9 | Buttons | 3x tactile switches (6mm) | GPIO 2, 3, 14 (w/ 10K pull-ups) | $1 |
+| 10 | Enclosure | 3D-printed (~120x65x35mm) | — | $5 |
+| 11 | Wiring/misc | JST connectors, perfboard, headers | — | $5 |
+| | **TOTAL** | | | **~$62** |
+
+**Note on antennas:** External SMA whips removed. The 2.4 GHz WiFi/BLE uses the board's PCB antenna (adequate for probe capture at ~20m range). The 433 MHz CC1101 antenna is a ~17cm wire coiled inside the enclosure (~30% range reduction vs external whip, still ~20-35m for TPMS). No visible antennas = more discreet form factor. The GPS ceramic patch is inside the NEO-M8N module.
 
 ### Budget Options
 
 | Build | What's Removed | Cost |
 |-------|---------------|------|
-| Without CC1101 | Remove items 5, 6 | ~$49 |
-| Bare minimum | Remove LoRa, ext antenna, buzzer, extra buttons | ~$38 |
+| Without CC1101 | Remove items 5, 6 | ~$55 |
+| Bare minimum (WiFi+BLE only) | Remove CC1101, buzzer, extra buttons | ~$42 |
+
+## Display Comparison
+
+| | Old (TFT) | New (AMOLED) |
+|---|---|---|
+| Size | 1.9" | 1.91" |
+| Resolution | 170×320 | 240×536 |
+| Pixels | 54,400 | 128,640 (2.4× more) |
+| Text (8×16 font) | 21 chars × 20 lines | 30 chars × 33 lines |
+| Driver IC | ST7789 (parallel i80) | RM67162 (QSPI) |
+| Contrast | Good | Perfect blacks |
+| Viewing angle | Washes out | Excellent |
+| Power (dark theme) | ~25mA constant backlight | ~5-10mA (only lit pixels) |
+| Price | $18 | $22 |
 
 ## GPIO Pin Map
 
@@ -48,22 +65,24 @@
 | 1 | Buzzer (PWM) | LEDC |
 | 2 | Button 1 (scroll up) | Digital input |
 | 3 | Button 2 (scroll down / select) | Digital input |
-| 6 | LoRa BUSY | Digital input |
-| 7 | LoRa DIO1 (IRQ) | Digital input (interrupt) |
-| 8 | LoRa RST | Digital output |
-| 9 | LoRa CS | SPI chip select |
+| 6 | CC1101 RST (optional) | Digital output |
+| 7 | CC1101 GDO2 | Digital input |
+| 8 | CC1101 GDO0 (IRQ) | Digital input (interrupt) |
+| 9 | CC1101 CS | SPI chip select |
 | 10 | SD Card CS | SPI chip select |
-| 11 | SPI MOSI (shared: SD + LoRa) | SPI3 |
-| 12 | SPI CLK (shared: SD + LoRa) | SPI3 |
-| 13 | SPI MISO (shared: SD + LoRa) | SPI3 |
+| 11 | SPI MOSI (shared: SD + CC1101) | SPI3 |
+| 12 | SPI CLK (shared: SD + CC1101) | SPI3 |
+| 13 | SPI MISO (shared: SD + CC1101) | SPI3 |
 | 14 | Button 3 (back / mode) | Digital input |
 | 18-19 | USB D-/D+ (OTG) | Reserved |
 | 43 | GPS UART TX | UART1 |
 | 44 | GPS UART RX | UART1 |
 
-**SPI bus sharing:** SD card and LoRa module share MOSI/MISO/CLK with separate CS lines. Firmware must use SPI bus mutex. Standard pattern — ESP-IDF handles this natively.
+**SPI bus sharing:** SD card and CC1101 share MOSI/MISO/CLK with separate CS lines. Firmware uses SPI bus mutex.
 
-**Free GPIOs after full build:** 0-2 (no expansion headroom with LoRa installed)
+**AMOLED display pins:** The T-Display-S3 AMOLED uses internal QSPI for the display (not user-accessible GPIOs). Display does NOT consume any of the above pins.
+
+**Free GPIOs after full build:** 0-2 depending on board revision.
 
 ## Power Budget
 
@@ -74,31 +93,31 @@
 | ESP32-S3 CPU (dual-core, 240MHz) | 50 | 100% | 50 |
 | CC1101 sub-GHz RX (continuous) | 15 | 100% | 15 |
 | GPS module (NEO-M8N) | 30 | 50% | 15 |
-| TFT display (backlight on) | 25 | 40% | 10 |
+| AMOLED display (dark theme, ~10% lit pixels) | 8 | 40% | 3.2 |
 | SD card (SPI writes) | 40 | 2% | 0.8 |
 | Buzzer (intermittent) | 30 | 0.5% | 0.15 |
-| Regulator overhead (~15%) | — | 100% | 29 |
-| **Total** | | | **~224 mA** |
+| Regulator overhead (~15%) | — | 100% | 27 |
+| **Total** | | | **~216 mA** |
 
 ### Battery Life
 
 | Battery | Capacity | Runtime | Notes |
 |---------|----------|---------|-------|
-| 18650 (stock settings) | 3000mAh | ~13.4h | WiFi + BLE + LoRa + GPS + display |
-| 18650 (optimized) | 3000mAh | ~15h+ | Display auto-off, GPS 60s cycle, CPU 160MHz idle |
-| LiPo 2000mAh (compact) | 2000mAh | ~9h | Smaller form factor option |
+| 18650 (stock settings) | 3000mAh | ~13.9h | AMOLED saves ~8mA vs TFT backlight |
+| 18650 (optimized) | 3000mAh | ~16h+ | Display auto-off, GPS 60s cycle, CPU 160MHz idle |
+| LiPo 2000mAh (compact) | 2000mAh | ~9.3h | Smaller form factor option |
 
-CC1101 draws ~15mA in RX — minimal power impact.
+AMOLED with dark theme actually uses LESS power than TFT — the black background pixels draw zero current.
 
 ## Antenna Strategy
 
 | Band | Antenna | Notes |
 |------|---------|-------|
-| 2.4 GHz (WiFi/BLE) | External SMA whip via U.FL pigtail ($3) | Improves BLE tracker range to ~30-40m vs ~10-20m with PCB antenna |
-| 433 MHz (TPMS/sub-GHz) | 1/4 wave SMA whip ~17cm ($3) | On CC1101 module. TPMS range: ~30-50m |
-| GPS (1575 MHz) | Ceramic patch (included with NEO-M8N) | Position on top of enclosure, facing sky |
+| 2.4 GHz (WiFi/BLE) | PCB antenna (built into T-Display-S3 AMOLED) | Internal, no external connector. Range ~15-25m for probes, ~10-15m for BLE trackers. Adequate for pocket carry. |
+| 433 MHz (TPMS/sub-GHz) | Internal wire (~17cm coiled inside enclosure) | Soldered to CC1101 antenna pad. Range ~20-35m for TPMS. No external protrusion. |
+| GPS (1575 MHz) | Ceramic patch (inside NEO-M8N module) | Position module near top of enclosure for sky view. |
 
-Two SMA bulkhead connectors on the enclosure (top edge). Both antennas protrude upward.
+**No external antennas.** All antennas internal for discreet form factor. Range is sufficient for pocket-carry detection (TPMS sensors broadcast at ~30-50m, WiFi probes at full power reach ~50m+).
 
 ## Capabilities
 
@@ -112,7 +131,8 @@ Two SMA bulkhead connectors on the enclosure (top edge). Both antennas protrude 
 | Sub-GHz device detection | CC1101 decodes key fobs, security sensors, simple OOK protocols |
 | GPS location tagging | UART GPS module |
 | Session logging | CSV to SD card |
-| Real-time alerts | TFT display + buzzer |
+| Real-time alerts | AMOLED display + buzzer |
+| Phone companion | BLE GATT server streams alerts/status to phone app |
 | Data upload to base station | USB-C serial (primary) or SD card swap (fallback) |
 
 ## What the Handheld CANNOT Do (Base Station Only)
@@ -126,18 +146,10 @@ Two SMA bulkhead connectors on the enclosure (top edge). Both antennas protrude 
 - KML/HTML report generation
 - Historical cross-session analysis
 
-## RTL-SDR via USB-OTG: Not Feasible
-
-Evaluated and rejected:
-- No ESP32 port of librtlsdr
-- 300mA power draw cuts battery life to ~5 hours
-- ESP32 cannot process 2.048 Msps I/Q samples in real-time
-- Destroys handheld form factor
-- The SX1262 LoRa module covers the most important sub-GHz use case at 1/50th the power
-
 ## Open Decisions
 
-- [ ] Enclosure design — accommodate two SMA antenna connectors + battery compartment
-- [ ] SPI bus verification — confirm shared SPI works reliably between SD + SX1262 on target board revision
-- [ ] T-Display-S3 board revision — verify GPIO 6-14 are all broken out on headers
+- [ ] Verify T-Display-S3 AMOLED GPIO availability matches pin map above
+- [ ] Enclosure design — no external antennas, accommodate 18650 holder + perfboard
+- [ ] SPI bus verification — confirm shared SPI works reliably between SD + CC1101
+- [ ] Internal 433 MHz wire antenna tuning — verify TPMS reception range with coiled wire
 - [ ] Optional vibration motor — swap for or add alongside buzzer for silent alerts
