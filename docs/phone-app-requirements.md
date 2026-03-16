@@ -185,6 +185,48 @@ All JSON. Device appearances use the same schema across all three systems:
 }
 ```
 
+## Health & Wellness Features (Phone Only)
+
+These features were originally on the handheld but moved to the phone per social psychology review. The phone provides OS-level encryption, biometric lock, and app-hiding — protection the ESP32 cannot match. If the handheld is discovered or seized, it contains only step data.
+
+### Mood Tracker
+- 1-10 scale mood logging with timestamp and optional GPS
+- 7-day rolling average with trend detection (improving/stable/declining)
+- 24-hour check-in reminders (configurable)
+- Evidence-grade timestamped entries for legal documentation
+- Export as CSV/PDF for therapy or legal proceedings
+- **Privacy:** encrypted at rest by OS, NOT synced to handheld or base station
+- **Correlation:** user can OPTIONALLY view mood entries alongside surveillance timeline, but the device never auto-correlates — a human analyst draws conclusions
+
+### Cycle/Fertility Tracker
+- Calendar-based menstrual cycle tracking
+- Fertile window prediction (adjusted to individual cycle length)
+- Basal body temperature logging
+- **Privacy:** most sensitive data in the system. Never transmitted over BLE. Never appears in session exports. Encrypted at rest by OS. Consider separate PIN/biometric within the app.
+- **Legal:** post-Dobbs implications require jurisdiction-aware data handling
+
+### Sobriety Counter
+- Days/hours since user-set date
+- Milestone tracking (30 days, 90 days, 6 months, 1 year, etc.)
+- **Privacy:** hidden by default (opt-in feature). Never visible without app unlock. If the user is in a recovery program, this data is protected health information.
+
+### Design Principles for Health Features
+- Health screens are architecturally separated from surveillance alerts — a surveillance notification NEVER intrudes on a health screen
+- Health data is never transmitted to the ESP32 handheld
+- Health data is never included in base station session uploads
+- Duress wipe on the phone destroys health data (it's evidence the app does more than track BLE devices)
+- Export is user-initiated only, in formats suitable for therapy, medical, or legal use
+
+## Specialist Review Needed
+
+The health features and the overall device concept (wellness tool with hidden surveillance detection) should be reviewed by a **trauma-informed design specialist** or **clinical psychologist with DV/forensic experience** — not a social psychologist. Key questions:
+- How do trauma survivors (freeze/fawn/dissociation) interact with devices under duress?
+- What do prosecutors and victim advocates actually need for evidence?
+- How do abusers discover and weaponize technology in DV contexts?
+- Safety planning methodology (professional discipline, not software feature)
+
+Recommended resource: NNEDV Safety Net project (techsafety.org).
+
 ## Out of Scope (v1)
 
 - Cloud sync between multiple phones
@@ -192,3 +234,6 @@ All JSON. Device appearances use the same schema across all three systems:
 - Apple Watch native app (use standard iOS notification forwarding)
 - Wear OS native app (use standard Android notification forwarding)
 - Widget/live activity on lock screen (v2)
+- Free-text journaling (too much discoverable data)
+- Gamification of any health feature (inappropriate for this context)
+- Sleep tracking (accelerometer data is too intimate if discovered)
