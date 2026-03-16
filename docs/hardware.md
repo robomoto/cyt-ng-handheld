@@ -28,24 +28,26 @@
 | 3   | SD card breakout | Generic microSD SPI module (3.3V native, no level shifter) | SPI: GPIO 10 (CS), 11 (MOSI), 12 (CLK), 13 (MISO)                 | $2       |
 | 4   | microSD card     | 8GB+ Class 10                                              | In SD breakout                                                    | $4       |
 | 5   | Sub-GHz module   | CC1101-based (EBYTE E07-900M10S or generic)                | SPI shared: GPIO 15 (CS), 16 (GDO0/IRQ), 21 (GDO2) | $6       |
-| 6   | 433 MHz antenna  | Internal wire antenna (~17cm, coiled inside case)          | Solder to CC1101 antenna pad                                      | $1       |
-| 7   | Battery          | 18650 Samsung 30Q (3000mAh) + spring holder w/ JST-PH 2.0  | JST-PH to battery connector                                       | $5       |
-| 8   | Buzzer           | Passive piezo (3.3V)                                       | GPIO 1 (PWM)                                                      | $1       |
-| 9   | Buttons          | 3x tactile switches (6mm)                                  | GPIO 2, 3, 14 (w/ 10K pull-ups)                                   | $1       |
-| 10  | Enclosure        | 3D-printed (~120x65x35mm)                                  | —                                                                 | $5       |
-| 11  | Wiring/misc      | JST connectors, perfboard, headers                         | —                                                                 | $5       |
-|     | **TOTAL**        |                                                            |                                                                   | **~$62** |
+| 6   | 433 MHz antenna  | 1/4 wave SMA whip (~17cm)                                 | SMA on CC1101 module                                              | $3       |
+| 7   | 2.4 GHz antenna  | External SMA whip + U.FL pigtail                          | U.FL to board PCB antenna pad                                     | $3       |
+| 8   | Battery          | 18650 Samsung 30Q (3000mAh) + spring holder w/ JST-PH 2.0  | JST-PH to battery connector                                       | $5       |
+| 9   | Buzzer           | Passive piezo (3.3V)                                       | GPIO 1 (PWM)                                                      | $1       |
+| 10  | Buttons          | 3x tactile switches (6mm)                                  | GPIO 2, 3, 14 (w/ 10K pull-ups)                                   | $1       |
+| 11  | Enclosure        | 3D-printed (~120x65x35mm)                                  | 2x SMA bulkhead connectors on top edge                            | $5       |
+| 12  | Wiring/misc      | JST connectors, perfboard, headers, SMA pigtails           | —                                                                 | $5       |
+|     | **TOTAL**        |                                                            |                                                                   | **~$67** |
 
 
-**Note on antennas:** External SMA whips removed. The 2.4 GHz WiFi/BLE uses the board's PCB antenna (adequate for probe capture at ~~20m range). The 433 MHz CC1101 antenna is a ~17cm wire coiled inside the enclosure (~~30% range reduction vs external whip, still ~20-35m for TPMS). No visible antennas = more discreet form factor. The GPS ceramic patch is inside the NEO-M8N module.
+**Antennas:** Two external SMA whip antennas on bulkhead connectors through the enclosure top. The 2.4 GHz whip (~3cm) connects via U.FL pigtail to the board's antenna pad, improving BLE tracker range to ~30-40m. The 433 MHz whip (~17cm) connects to the CC1101 module for ~50m TPMS range. GPS ceramic patch is internal to the NEO-M8N module.
 
 ### Budget Options
 
 
 | Build                        | What's Removed                       | Cost |
 | ---------------------------- | ------------------------------------ | ---- |
-| Without CC1101               | Remove items 5, 6                    | ~$55 |
-| Bare minimum (WiFi+BLE only) | Remove CC1101, buzzer, extra buttons | ~$42 |
+| Without CC1101               | Remove items 5, 6                    | ~$58 |
+| Without ext antennas         | Remove item 7, use PCB/internal wire | ~$64 |
+| Bare minimum (WiFi+BLE only) | Remove CC1101, antennas, buzzer, extra buttons | ~$45 |
 
 
 ## Display Comparison
@@ -125,12 +127,12 @@ AMOLED with dark theme actually uses LESS power than TFT — the black backgroun
 
 | Band                   | Antenna                                       | Notes                                                                                                           |
 | ---------------------- | --------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| 2.4 GHz (WiFi/BLE)     | PCB antenna (built into T-Display-S3 AMOLED)  | Internal, no external connector. Range ~15-25m for probes, ~10-15m for BLE trackers. Adequate for pocket carry. |
-| 433 MHz (TPMS/sub-GHz) | Internal wire (~17cm coiled inside enclosure) | Soldered to CC1101 antenna pad. Range ~20-35m for TPMS. No external protrusion.                                 |
-| GPS (1575 MHz)         | Ceramic patch (inside NEO-M8N module)         | Position module near top of enclosure for sky view.                                                             |
+| 2.4 GHz (WiFi/BLE)     | External SMA whip (~3cm) via U.FL pigtail     | SMA bulkhead connector on enclosure. Range ~30-40m for BLE trackers, ~40-50m for WiFi probes. |
+| 433 MHz (TPMS/sub-GHz) | External SMA whip (~17cm)                     | SMA bulkhead connector on enclosure. Range ~50m for TPMS. |
+| GPS (1575 MHz)         | Ceramic patch (inside NEO-M8N module)         | Position module near top of enclosure for sky view. |
 
 
-**No external antennas.** All antennas internal for discreet form factor. Range is sufficient for pocket-carry detection (TPMS sensors broadcast at ~30-50m, WiFi probes at full power reach ~50m+).
+**Two external SMA antennas** on bulkhead connectors through the enclosure top edge. Better range is worth the visibility — the device lives in a bag and two small whip antennas are unremarkable.
 
 ## Capabilities
 
