@@ -9,12 +9,14 @@ idf_component_register(
         "storage/sd_logger.c"
         "storage/device_table.c"
         "gps/gps_parser.c"
+        "companion/ble_companion.c"
     INCLUDE_DIRS
         "."
         "scanners"
         "ui"
         "storage"
         "gps"
+        "companion"
     REQUIRES
         esp_wifi
         esp_event

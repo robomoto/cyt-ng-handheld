@@ -32,6 +32,7 @@
 #include "storage/sd_logger.h"
 #include "gps/gps_parser.h"
 #include "ui/display.h"
+#include "companion/ble_companion.h"
 
 static const char *TAG = "cyt_main";
 
@@ -72,6 +73,13 @@ void app_main(void)
         sd_logger_start_session();
     } else {
         ESP_LOGW(TAG, "SD card not available — logging disabled");
+    }
+
+    if (ble_companion_init() == 0) {
+        ble_companion_start_advertising();
+        ESP_LOGI(TAG, "BLE companion service started — discoverable as CYT-NG");
+    } else {
+        ESP_LOGW(TAG, "BLE companion init failed");
     }
 
     if (cc1101_scanner_init() == 0) {
@@ -200,6 +208,13 @@ static void display_task(void *arg)
         /* TODO: populate per-source counts, highest persistence, battery */
 
         display_update(&status);
+
+        /* Push status to companion phone/watch if connected */
+        if (ble_companion_is_connected()) {
+            gps_fix_t gps = gps_get_fix();
+            ble_companion_update_status(&status, &gps);
+        }
+
         vTaskDelay(pdMS_TO_TICKS(CYT_DISPLAY_UPDATE_MS));
     }
 }
