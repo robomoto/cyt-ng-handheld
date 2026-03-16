@@ -8,6 +8,7 @@ idf_component_register(
         "ui/display.c"
         "storage/sd_logger.c"
         "storage/device_table.c"
+        "storage/familiar_devices.c"
         "gps/gps_parser.c"
         "companion/ble_companion.c"
     INCLUDE_DIRS

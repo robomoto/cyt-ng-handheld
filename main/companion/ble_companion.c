@@ -15,9 +15,11 @@
 
 #include "ble_companion.h"
 #include "cyt_config.h"
+#include "storage/familiar_devices.h"
 
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -83,6 +85,175 @@ static size_t s_devlist_len = 0;
 
 /* Protects s_status_buf from concurrent access. */
 static SemaphoreHandle_t s_status_mutex = NULL;
+
+/* ── Familiar-device command helpers ──────────────────────────────── */
+
+/**
+ * Parse a hex MAC string "AA:BB:CC:DD:EE:FF" or "aabbccddeeff" into 6 bytes.
+ * Returns true on success.
+ */
+static bool parse_device_id(const char *str, uint8_t out[6])
+{
+    if (!str) return false;
+
+    /* Try colon-separated first (AA:BB:CC:DD:EE:FF = 17 chars) */
+    unsigned int b[6];
+    if (strlen(str) >= 17 &&
+        sscanf(str, "%02x:%02x:%02x:%02x:%02x:%02x",
+               &b[0], &b[1], &b[2], &b[3], &b[4], &b[5]) == 6) {
+        for (int i = 0; i < 6; i++) out[i] = (uint8_t)b[i];
+        return true;
+    }
+    /* Try plain hex (aabbccddeeff = 12 chars) */
+    if (strlen(str) >= 12 &&
+        sscanf(str, "%02x%02x%02x%02x%02x%02x",
+               &b[0], &b[1], &b[2], &b[3], &b[4], &b[5]) == 6) {
+        for (int i = 0; i < 6; i++) out[i] = (uint8_t)b[i];
+        return true;
+    }
+    return false;
+}
+
+/**
+ * Extract a JSON string value for the given key using strstr.
+ * Writes the value (without quotes) into out, up to out_len-1 chars.
+ * Returns true on success.
+ */
+static bool json_extract_str(const char *json, const char *key,
+                              char *out, size_t out_len)
+{
+    /* Build "key":" search pattern */
+    char pattern[48];
+    int plen = snprintf(pattern, sizeof(pattern), "\"%s\":\"", key);
+    if (plen <= 0 || (size_t)plen >= sizeof(pattern)) return false;
+
+    const char *p = strstr(json, pattern);
+    if (!p) return false;
+
+    p += plen; /* skip past opening quote */
+    size_t i = 0;
+    while (*p && *p != '"' && i < out_len - 1) {
+        out[i++] = *p++;
+    }
+    out[i] = '\0';
+    return i > 0;
+}
+
+/** Context for building familiar device list JSON. */
+typedef struct {
+    char  *buf;
+    size_t cap;
+    size_t pos;
+    int    count;
+} familiar_list_ctx_t;
+
+static void familiar_list_cb(const familiar_entry_t *entry, void *ctx)
+{
+    familiar_list_ctx_t *fl = (familiar_list_ctx_t *)ctx;
+
+    if (fl->count > 0 && fl->pos < fl->cap - 1) {
+        fl->buf[fl->pos++] = ',';
+    }
+
+    char id_hex[18];
+    snprintf(id_hex, sizeof(id_hex), "%02x:%02x:%02x:%02x:%02x:%02x",
+             entry->device_id[0], entry->device_id[1], entry->device_id[2],
+             entry->device_id[3], entry->device_id[4], entry->device_id[5]);
+
+    int n = snprintf(fl->buf + fl->pos, fl->cap - fl->pos,
+                     "{\"id\":\"%s\",\"hint\":\"%s\",\"label\":\"%s\",\"auto\":%s}",
+                     id_hex,
+                     entry->device_hint,
+                     entry->user_label,
+                     entry->auto_baselined ? "true" : "false");
+    if (n > 0 && (size_t)n < fl->cap - fl->pos) {
+        fl->pos += (size_t)n;
+    }
+    fl->count++;
+}
+
+/**
+ * Handle familiar-device commands received over the GATT command characteristic.
+ * Called from inside gatt_access_cb after the external cmd_handler.
+ */
+static void handle_familiar_cmd(const char *cmd_buf, uint16_t len)
+{
+    /* ── mark_familiar ─────────────────────────────────────────── */
+    if (strstr(cmd_buf, "\"mark_familiar\"")) {
+        char id_str[24] = {0};
+        char label[FAMILIAR_LABEL_LEN] = {0};
+        uint8_t dev_id[6];
+
+        if (!json_extract_str(cmd_buf, "id", id_str, sizeof(id_str)) ||
+            !parse_device_id(id_str, dev_id)) {
+            ESP_LOGW(TAG, "mark_familiar: bad/missing id");
+            return;
+        }
+
+        /* Determine source_type from device table if possible */
+        source_type_t src = SOURCE_BLE; /* default */
+        const device_record_t *rec = device_table_lookup(dev_id);
+        if (rec) {
+            src = (source_type_t)rec->source_type;
+        }
+
+        familiar_add(dev_id, src, NULL, false);
+
+        /* Set label if provided */
+        if (json_extract_str(cmd_buf, "label", label, sizeof(label))) {
+            familiar_set_label(dev_id, label);
+        }
+
+        ESP_LOGI(TAG, "mark_familiar: %s label=\"%s\"", id_str, label);
+        return;
+    }
+
+    /* ── unmark_familiar ───────────────────────────────────────── */
+    if (strstr(cmd_buf, "\"unmark_familiar\"")) {
+        char id_str[24] = {0};
+        uint8_t dev_id[6];
+
+        if (!json_extract_str(cmd_buf, "id", id_str, sizeof(id_str)) ||
+            !parse_device_id(id_str, dev_id)) {
+            ESP_LOGW(TAG, "unmark_familiar: bad/missing id");
+            return;
+        }
+
+        familiar_remove(dev_id);
+        ESP_LOGI(TAG, "unmark_familiar: %s", id_str);
+        return;
+    }
+
+    /* ── list_familiar ─────────────────────────────────────────── */
+    if (strstr(cmd_buf, "\"list_familiar\"")) {
+        /*
+         * Build a JSON array of familiar devices and write it into
+         * s_devlist_buf so the phone can read it via the Device List
+         * characteristic.
+         */
+        s_devlist_buf[0] = '[';
+        familiar_list_ctx_t fl = {
+            .buf   = s_devlist_buf + 1,
+            .cap   = DEVLIST_BUF_SIZE - 2,
+            .pos   = 0,
+            .count = 0,
+        };
+
+        familiar_for_each(familiar_list_cb, &fl);
+
+        size_t total = 1 + fl.pos;
+        if (total < DEVLIST_BUF_SIZE - 1) {
+            s_devlist_buf[total] = ']';
+            total++;
+        }
+        s_devlist_buf[total] = '\0';
+        s_devlist_len = total;
+
+        ESP_LOGI(TAG, "list_familiar: %d devices, %zu bytes",
+                 fl.count, s_devlist_len);
+        return;
+    }
+}
 
 /* ── Device list builder ──────────────────────────────────────────── */
 
@@ -202,6 +373,9 @@ static int gatt_access_cb(uint16_t conn_handle, uint16_t attr_handle,
         cmd_buf[copied] = '\0';
 
         ESP_LOGI(TAG, "Cmd received (%u bytes): %s", copied, cmd_buf);
+
+        /* Handle built-in familiar-device commands */
+        handle_familiar_cmd(cmd_buf, copied);
 
         if (s_cmd_handler) {
             s_cmd_handler(cmd_buf, copied);

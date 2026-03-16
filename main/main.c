@@ -29,6 +29,7 @@
 #include "scanners/ble_scanner.h"
 #include "scanners/cc1101_scanner.h"
 #include "storage/device_table.h"
+#include "storage/familiar_devices.h"
 #include "storage/sd_logger.h"
 #include "gps/gps_parser.h"
 #include "ui/display.h"
@@ -62,6 +63,13 @@ void app_main(void)
     }
     ESP_LOGI(TAG, "Device table initialized (%d max devices)", CYT_MAX_DEVICES);
 
+    if (familiar_init() == 0) {
+        ESP_LOGI(TAG, "Familiar device store initialized (%lu known)",
+                 (unsigned long)familiar_count());
+    } else {
+        ESP_LOGW(TAG, "Familiar device store init failed");
+    }
+
     gps_init();
     ESP_LOGI(TAG, "GPS initialized on UART%d", CYT_GPS_UART_NUM);
 
@@ -88,6 +96,9 @@ void app_main(void)
     } else {
         ESP_LOGW(TAG, "CC1101 not available — TPMS scanning disabled");
     }
+
+    /* ── Start baseline learning (auto-mark devices for first 5 min) ── */
+    familiar_start_baseline();
 
     /* ── Create tasks ──────────────────────────────────────────── */
 
@@ -142,6 +153,8 @@ static void analysis_task(void *arg)
     cc1101_detection_t  cc1101_det;
 
     TickType_t last_rotation = xTaskGetTickCount();
+    bool baseline_stopped = false;
+    char hint_buf[FAMILIAR_HINT_LEN];
 
     for (;;) {
         /* Drain WiFi queue */
@@ -153,7 +166,22 @@ static void analysis_task(void *arg)
                 rec->ssid_len = wifi_pkt.ssid_len;
                 rec->rssi_avg = wifi_pkt.rssi;
                 rec->last_seen = wifi_pkt.timestamp;
-                rec->window_flags |= 0x01; /* Current 5-min window */
+
+                if (familiar_is_baseline_active()) {
+                    /* Auto-learn: build hint from SSID if available */
+                    if (wifi_pkt.ssid_len > 0) {
+                        snprintf(hint_buf, sizeof(hint_buf),
+                                 "WiFi: %.25s", wifi_pkt.ssid);
+                    } else {
+                        strncpy(hint_buf, "WiFi Device", sizeof(hint_buf));
+                    }
+                    familiar_add(wifi_pkt.src_mac, SOURCE_WIFI,
+                                 hint_buf, true);
+                    rec->window_flags |= 0x01;
+                } else if (!familiar_is_known(wifi_pkt.src_mac)) {
+                    rec->window_flags |= 0x01; /* Current 5-min window */
+                }
+                /* Familiar devices: tracked but no window flag → no alert */
             }
         }
 
@@ -164,7 +192,25 @@ static void analysis_task(void *arg)
             if (rec) {
                 rec->rssi_avg = ble_det.rssi;
                 rec->last_seen = gps_get_timestamp();
-                rec->window_flags |= 0x01;
+
+                if (familiar_is_baseline_active()) {
+                    /* Use tracker_type as hint (e.g., "AirTag") */
+                    if (ble_det.is_remote_id && ble_det.drone_serial[0]) {
+                        snprintf(hint_buf, sizeof(hint_buf),
+                                 "Drone: %.20s", ble_det.drone_serial);
+                        familiar_add(ble_det.device_id, SOURCE_DRONE,
+                                     hint_buf, true);
+                    } else if (ble_det.tracker_type[0]) {
+                        familiar_add(ble_det.device_id, SOURCE_BLE,
+                                     ble_det.tracker_type, true);
+                    } else {
+                        familiar_add(ble_det.device_id, SOURCE_BLE,
+                                     "BLE Device", true);
+                    }
+                    rec->window_flags |= 0x01;
+                } else if (!familiar_is_known(ble_det.device_id)) {
+                    rec->window_flags |= 0x01;
+                }
             }
         }
 
@@ -175,7 +221,18 @@ static void analysis_task(void *arg)
             if (rec) {
                 rec->rssi_avg = cc1101_det.rssi;
                 rec->last_seen = cc1101_det.timestamp;
-                rec->window_flags |= 0x01;
+
+                if (familiar_is_baseline_active()) {
+                    snprintf(hint_buf, sizeof(hint_buf),
+                             "Tire Sensor (%02X%02X)",
+                             cc1101_det.device_id[4],
+                             cc1101_det.device_id[5]);
+                    familiar_add(cc1101_det.device_id, SOURCE_TPMS,
+                                 hint_buf, true);
+                    rec->window_flags |= 0x01;
+                } else if (!familiar_is_known(cc1101_det.device_id)) {
+                    rec->window_flags |= 0x01;
+                }
             }
         }
 
@@ -187,6 +244,14 @@ static void analysis_task(void *arg)
             ESP_LOGI(TAG, "Windows rotated. Active: %lu, Suspicious: %lu",
                      (unsigned long)device_table_active_count(),
                      (unsigned long)device_table_suspicious_count());
+
+            /* Stop baseline after first window rotation (5 minutes) */
+            if (!baseline_stopped && familiar_is_baseline_active()) {
+                uint32_t learned = familiar_stop_baseline();
+                baseline_stopped = true;
+                ESP_LOGI(TAG, "Baseline complete: %lu devices auto-learned",
+                         (unsigned long)learned);
+            }
         }
 
         vTaskDelay(pdMS_TO_TICKS(100)); /* 10 Hz analysis rate */
