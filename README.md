@@ -61,6 +61,17 @@ timestamp,mac,device_id,source_type,rssi,lat,lon,ssid,window_flags,appearance_co
 
 Upload to base station via USB-C cable or SD card swap.
 
+## Documentation
+
+- [Hardware BOM & Pin Map](docs/hardware.md) — complete parts list, GPIO assignments, power budget
+- [TODO](docs/TODO.md) — remaining firmware work and v2 enhancements
+- [Phone App Requirements](docs/phone-app-requirements.md) — companion app spec (separate repo)
+
+## Related Projects
+
+- [CYT-NG Base Station](https://github.com/robomoto/Chasing-Your-Tail-NG) — Raspberry Pi multi-sensor base station (Python)
+- Companion App — planned (see [requirements](docs/phone-app-requirements.md))
+
 ## License
 
 MIT
