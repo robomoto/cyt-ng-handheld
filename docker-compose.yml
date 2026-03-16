@@ -1,0 +1,53 @@
+services:
+  idf:
+    build: .
+    volumes:
+      - .:/project
+    working_dir: /project
+    # Pass through USB for flashing (optional, requires --privileged or device mapping)
+    # devices:
+    #   - /dev/ttyACM0:/dev/ttyACM0
+
+  build:
+    build: .
+    volumes:
+      - .:/project
+    working_dir: /project
+    command: idf.py build
+
+  flash:
+    build: .
+    volumes:
+      - .:/project
+    working_dir: /project
+    # Uncomment and set the correct USB device for your system
+    # devices:
+    #   - /dev/ttyACM0:/dev/ttyACM0
+    command: idf.py -p /dev/ttyACM0 flash
+
+  monitor:
+    build: .
+    volumes:
+      - .:/project
+    working_dir: /project
+    # devices:
+    #   - /dev/ttyACM0:/dev/ttyACM0
+    command: idf.py -p /dev/ttyACM0 monitor
+    stdin_open: true
+    tty: true
+
+  menuconfig:
+    build: .
+    volumes:
+      - .:/project
+    working_dir: /project
+    command: idf.py menuconfig
+    stdin_open: true
+    tty: true
+
+  clean:
+    build: .
+    volumes:
+      - .:/project
+    working_dir: /project
+    command: idf.py fullclean

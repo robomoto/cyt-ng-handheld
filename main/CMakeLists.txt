@@ -1,0 +1,28 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "scanners/wifi_scanner.c"
+        "scanners/ble_scanner.c"
+        "scanners/cc1101_scanner.c"
+        "scanners/remote_id.c"
+        "ui/display.c"
+        "storage/sd_logger.c"
+        "storage/device_table.c"
+        "gps/gps_parser.c"
+    INCLUDE_DIRS
+        "."
+        "scanners"
+        "ui"
+        "storage"
+        "gps"
+    REQUIRES
+        esp_wifi
+        esp_event
+        nvs_flash
+        bt
+        driver
+        fatfs
+        sdmmc
+        esp_timer
+        spi_flash
+)
