@@ -27,4 +27,6 @@ idf_component_register(
         sdmmc
         esp_timer
         spi_flash
+        esp_lcd
+        mbedtls
 )

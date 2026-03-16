@@ -21,7 +21,7 @@
 #define CYT_PACKET_QUEUE_SIZE       512     /* Ring buffer for packet callbacks */
 
 /* ── GPS (UART1 — u-blox NEO-M8N) ───────────────────────────────── */
-#define CYT_GPS_UART_NUM            UART_NUM_1
+#define CYT_GPS_UART_NUM            1
 #define CYT_GPS_TX_PIN              43
 #define CYT_GPS_RX_PIN              44
 #define CYT_GPS_BAUD_RATE           9600

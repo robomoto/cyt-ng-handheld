@@ -15,7 +15,7 @@ typedef enum {
 } source_type_t;
 
 /**
- * Fixed-size device record — 48 bytes, stored in PSRAM.
+ * Fixed-size device record — 53 bytes packed, stored in PSRAM.
  *
  * For WiFi: device_id = MAC (6 bytes).
  * For BLE:  device_id = payload hash (first 6 bytes of SHA-256).
@@ -35,7 +35,7 @@ typedef struct __attribute__((packed)) {
     uint8_t  _padding;           /* Alignment */
 } device_record_t;
 
-_Static_assert(sizeof(device_record_t) == 48, "device_record_t must be 48 bytes");
+_Static_assert(sizeof(device_record_t) == 53, "device_record_t must be 53 bytes");
 
 /** Initialize the device table (allocates PSRAM). Returns 0 on success. */
 int device_table_init(void);

@@ -14,6 +14,7 @@
  */
 
 #include "ble_companion.h"
+#include "cyt_config.h"
 
 #include <string.h>
 #include <stdio.h>

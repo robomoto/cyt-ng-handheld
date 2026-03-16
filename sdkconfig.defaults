@@ -38,6 +38,9 @@ CONFIG_TINYUSB_CDC_ENABLED=y
 # Logging
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 
+# Flash size — T-Display-S3 has 16MB
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
 # Partition table — custom for larger app + storage
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"

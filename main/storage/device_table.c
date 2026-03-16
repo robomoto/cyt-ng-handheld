@@ -2,13 +2,14 @@
  * Device tracking table — PSRAM record array with SRAM hash index.
  *
  * Hash table uses separate chaining via a parallel next-pointer array.
- * Records are 48-byte packed structs stored contiguously in PSRAM.
+ * Records are 53-byte packed structs stored contiguously in PSRAM.
  */
 
 #include "device_table.h"
 #include "../cyt_config.h"
 
 #include <string.h>
+#include <inttypes.h>
 #include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <esp_timer.h>
@@ -150,7 +151,7 @@ device_record_t *device_table_upsert(const uint8_t id[6], source_type_t source)
 
     /* Table full? */
     if (s_record_count >= CYT_MAX_DEVICES) {
-        ESP_LOGW(TAG, "Device table full (%u records)", s_record_count);
+        ESP_LOGW(TAG, "Device table full (%" PRIu32 " records)", s_record_count);
         return NULL;
     }
 

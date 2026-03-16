@@ -460,7 +460,7 @@ static void render_alert_screen(const display_status_t *st)
     draw_text_line(2, "HIGHEST PERSIST:", COLOR_YELLOW, COLOR_BLACK);
 
     /* Device ID */
-    snprintf(buf, sizeof(buf), "ID: %.18s", st->highest_device_id);
+    snprintf(buf, sizeof(buf), "ID:%.17s", st->highest_device_id);
     draw_text_line(4, buf, COLOR_WHITE, COLOR_BLACK);
 
     /* Persistence score */
