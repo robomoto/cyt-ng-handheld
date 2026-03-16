@@ -50,9 +50,13 @@
 #define CYT_BUZZER_FREQ_HZ          2700
 #define CYT_BUZZER_ALERT_DURATION_MS 50     /* Short, discreet */
 
-/* ── Buttons ────────────────────────────────────────────────────── */
-#define CYT_BTN_UP_PIN              2
-#define CYT_BTN_DOWN_PIN            3
+/* ── QMI8658 IMU (hardwired on T-Display-S3 AMOLED) ────────────── */
+#define CYT_IMU_SDA_PIN             3   /* QMI8658 I2C SDA (hardwired) */
+#define CYT_IMU_SCL_PIN             2   /* QMI8658 I2C SCL (hardwired) */
+
+/* ── Buttons (moved from GPIO 2/3 — those are the IMU I2C bus) ── */
+#define CYT_BTN_UP_PIN              0   /* Boot button (built-in) */
+#define CYT_BTN_DOWN_PIN            4
 #define CYT_BTN_MODE_PIN            14
 
 /* ── Display (RM67162 AMOLED — T-Display-S3 AMOLED, QSPI interface) */

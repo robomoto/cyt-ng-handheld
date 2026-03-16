@@ -11,6 +11,10 @@ idf_component_register(
         "storage/familiar_devices.c"
         "gps/gps_parser.c"
         "companion/ble_companion.c"
+        "health/pedometer.c"
+        "health/cycle_tracker.c"
+        "health/mood_tracker.c"
+        "health/sobriety_counter.c"
     INCLUDE_DIRS
         "."
         "scanners"
@@ -18,6 +22,7 @@ idf_component_register(
         "storage"
         "gps"
         "companion"
+        "health"
     REQUIRES
         esp_wifi
         esp_event
